@@ -1,0 +1,14 @@
+# BlackRoad OS — robots.txt
+# Organization: BlackRoad OS, Inc. | blackroad.io | lucidia.earth
+# GitHub Enterprise: github.com/enterprises/blackroad-os
+# Keywords: BlackRoad, BlackRoad OS, BlackRoad AI, Lucidia, sovereign AI, AI infrastructure
+
+User-agent: *
+Allow: /
+
+# Sitemap location
+Sitemap: https://lucidia.earth/sitemap.xml
+
+# BlackRoad ecosystem sitemaps
+Sitemap: https://blackroad.io/sitemap.xml
+Sitemap: https://blackroadai.com/sitemap.xml
