@@ -1,0 +1,25 @@
+[
+  {
+    "name": "Lucidia — Basic",
+    "description": "Lucidia 3D Wilderness — Basic access. Explore the Minnesota wilderness in 3D.",
+    "prices": [
+      { "unit_amount": 999, "currency": "usd", "recurring": { "interval": "month" } }
+    ]
+  },
+  {
+    "name": "Lucidia — Pro",
+    "description": "Lucidia 3D Wilderness — Pro access with sovereign Ollama AI assistant.",
+    "prices": [
+      { "unit_amount": 2999, "currency": "usd", "recurring": { "interval": "month" } },
+      { "unit_amount": 29900, "currency": "usd", "recurring": { "interval": "year" } }
+    ]
+  },
+  {
+    "name": "BlackRoad OS — Enterprise",
+    "description": "Full BlackRoad OS stack. Sovereign AI infrastructure, 30,000 agents, full hardware control.",
+    "prices": [
+      { "unit_amount": 49900, "currency": "usd", "recurring": { "interval": "month" } },
+      { "unit_amount": 499000, "currency": "usd", "recurring": { "interval": "year" } }
+    ]
+  }
+]

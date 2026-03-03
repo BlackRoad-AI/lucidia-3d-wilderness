@@ -13,7 +13,19 @@ on:
 jobs:
   blackroad-agent:
     runs-on: ubuntu-latest
-    if: contains(github.event.comment.body, '@blackroad') || contains(github.event.issue.body, '@blackroad') || contains(github.event.pull_request.body, '@blackroad')
+    if: |
+      contains(github.event.comment.body, '@blackroad') ||
+      contains(github.event.comment.body, '@copilot') ||
+      contains(github.event.comment.body, '@lucidia') ||
+      contains(github.event.comment.body, '@blackboxprogramming') ||
+      contains(github.event.issue.body, '@blackroad') ||
+      contains(github.event.issue.body, '@copilot') ||
+      contains(github.event.issue.body, '@lucidia') ||
+      contains(github.event.issue.body, '@blackboxprogramming') ||
+      contains(github.event.pull_request.body, '@blackroad') ||
+      contains(github.event.pull_request.body, '@copilot') ||
+      contains(github.event.pull_request.body, '@lucidia') ||
+      contains(github.event.pull_request.body, '@blackboxprogramming')
 
     steps:
       - name: Trigger BlackRoad Agent

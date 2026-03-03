@@ -1,0 +1,139 @@
+name: 💳 Stripe Products Sync
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'stripe/products.json'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (list only, no changes)'
+        required: false
+        default: 'false'
+
+jobs:
+  sync-products:
+    name: Sync Stripe Products & Prices
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Stripe SDK
+        run: npm install stripe
+
+      - name: Validate secrets
+        run: |
+          if [ -z "${{ secrets.STRIPE_SECRET_KEY }}" ]; then
+            echo "❌ STRIPE_SECRET_KEY secret is not set."
+            exit 1
+          fi
+          echo "✅ Stripe secret key found."
+
+      - name: Create / sync products and prices
+        env:
+          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          node - <<'EOF'
+          const Stripe = require('./node_modules/stripe');
+          const fs = require('fs');
+          const path = require('path');
+
+          const stripe = Stripe(process.env.STRIPE_SECRET_KEY);
+          const dryRun = process.env.DRY_RUN === 'true';
+          const repoId = (process.env.GITHUB_REPOSITORY || '').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+          const productsFile = path.join(process.cwd(), 'stripe', 'products.json');
+          const products = fs.existsSync(productsFile)
+            ? JSON.parse(fs.readFileSync(productsFile, 'utf8'))
+            : [
+                {
+                  name: 'Lucidia — Basic',
+                  description: 'Lucidia 3D Wilderness — Basic access',
+                  prices: [{ unit_amount: 999,  currency: 'usd', recurring: { interval: 'month' } }]
+                },
+                {
+                  name: 'Lucidia — Pro',
+                  description: 'Lucidia 3D Wilderness — Pro access with Ollama AI',
+                  prices: [{ unit_amount: 2999, currency: 'usd', recurring: { interval: 'month' } }]
+                },
+                {
+                  name: 'BlackRoad OS — Enterprise',
+                  description: 'Full BlackRoad OS stack with sovereign AI infrastructure',
+                  prices: [{ unit_amount: 49900, currency: 'usd', recurring: { interval: 'month' } }]
+                }
+              ];
+
+          (async () => {
+            for (const productDef of products) {
+              // Build a stable metadata key derived from the product name
+              const productKey = productDef.name.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40);
+              console.log(`\n📦 Product: ${productDef.name} (key: ${productKey})`);
+
+              // Look up by metadata to avoid relying on name search query syntax
+              const allProducts = await stripe.products.list({ active: true, limit: 100 });
+              const existing = allProducts.data.find(
+                p => p.metadata && p.metadata.blackroad_key === productKey && p.metadata.repo === repoId
+              );
+
+              let product;
+              if (existing) {
+                product = existing;
+                console.log(`  ✅ Already exists: ${product.id}`);
+              } else if (!dryRun) {
+                product = await stripe.products.create({
+                  name: productDef.name,
+                  description: productDef.description || '',
+                  metadata: {
+                    source: 'blackroad-ci',
+                    repo: repoId,
+                    blackroad_key: productKey
+                  }
+                });
+                console.log(`  ✨ Created: ${product.id}`);
+              } else {
+                console.log(`  🔍 [dry-run] Would create product`);
+                continue;
+              }
+
+              // Create prices that don't already exist
+              const existingPrices = await stripe.prices.list({ product: product.id, active: true });
+              for (const priceDef of (productDef.prices || [])) {
+                const already = existingPrices.data.find(
+                  p =>
+                    p.unit_amount === priceDef.unit_amount &&
+                    p.currency === priceDef.currency &&
+                    (!priceDef.recurring || p.recurring?.interval === priceDef.recurring.interval)
+                );
+                if (already) {
+                  console.log(`  💵 Price already exists: ${already.id} (${priceDef.unit_amount / 100} ${priceDef.currency.toUpperCase()})`);
+                } else if (!dryRun) {
+                  const newPrice = await stripe.prices.create({
+                    product: product.id,
+                    unit_amount: priceDef.unit_amount,
+                    currency: priceDef.currency,
+                    ...(priceDef.recurring ? { recurring: priceDef.recurring } : {})
+                  });
+                  console.log(`  ✨ Created price: ${newPrice.id} (${priceDef.unit_amount / 100} ${priceDef.currency.toUpperCase()})`);
+                } else {
+                  console.log(`  🔍 [dry-run] Would create price: ${priceDef.unit_amount / 100} ${priceDef.currency.toUpperCase()}`);
+                }
+              }
+            }
+            console.log('\n✅ Stripe sync complete.');
+          })().catch(err => { console.error('❌', err.message); process.exit(1); });
+          EOF
+
+      - name: Summary
+        if: success()
+        run: echo "✅ Stripe products and prices are live."

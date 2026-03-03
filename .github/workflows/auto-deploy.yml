@@ -22,10 +22,17 @@ jobs:
       
       - name: Detect Service Type
         id: detect
+        env:
+          HAS_VERCEL: ${{ secrets.VERCEL_TOKEN != '' }}
         run: |
           if [ -f "next.config.mjs" ] || [ -f "next.config.js" ]; then
             echo "service_type=nextjs" >> $GITHUB_OUTPUT
-            echo "deploy_target=cloudflare" >> $GITHUB_OUTPUT
+            # Prefer Vercel for Next.js when token is available, else Cloudflare
+            if [ "$HAS_VERCEL" = "true" ]; then
+              echo "deploy_target=vercel" >> $GITHUB_OUTPUT
+            else
+              echo "deploy_target=cloudflare" >> $GITHUB_OUTPUT
+            fi
           elif [ -f "Dockerfile" ]; then
             echo "service_type=docker" >> $GITHUB_OUTPUT
             echo "deploy_target=railway" >> $GITHUB_OUTPUT
@@ -71,6 +78,41 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy .next --project-name=${{ github.event.repository.name }}
 
+  deploy-vercel:
+    name: Deploy to Vercel
+    needs: detect-service
+    if: needs.detect-service.outputs.deploy_target == 'vercel'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY }}
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          working-directory: ./
+          vercel-args: '--prod'
+
   deploy-railway:
     name: Deploy to Railway
     needs: detect-service
@@ -91,8 +133,8 @@ jobs:
 
   health-check:
     name: Health Check
-    needs: [deploy-cloudflare, deploy-railway]
-    if: always() && (needs.deploy-cloudflare.result == 'success' || needs.deploy-railway.result == 'success')
+    needs: [deploy-cloudflare, deploy-vercel, deploy-railway]
+    if: always() && (needs.deploy-cloudflare.result == 'success' || needs.deploy-vercel.result == 'success' || needs.deploy-railway.result == 'success')
     runs-on: ubuntu-latest
     
     steps:
