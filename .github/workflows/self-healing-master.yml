@@ -322,16 +322,23 @@ jobs:
         run: |
           echo "🔒 Running security audit..."
           
+          # Only run audit when a lockfile is present; without one npm/pnpm audit
+          # always exits with ENOLOCK and produces no actionable output.
           if [ -f "pnpm-lock.yaml" ]; then
             npm install -g pnpm
             pnpm audit --audit-level=high > audit-report.txt 2>&1 || true
             pnpm audit fix || true
-          else
+          elif [ -f "package-lock.json" ] || [ -f "yarn.lock" ]; then
             npm audit --audit-level=high > audit-report.txt 2>&1 || true
             npm audit fix || true
+          else
+            echo "No lockfile found — skipping audit to avoid false positives." > audit-report.txt
+            echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
+            exit 0
           fi
           
-          if [ -s "audit-report.txt" ]; then
+          # Only flag as vulnerable if audit output contains a real finding, not just errors.
+          if grep -qE "found [1-9][0-9]* vulnerabilit" audit-report.txt 2>/dev/null; then
             echo "vulnerabilities_found=true" >> $GITHUB_OUTPUT
           else
             echo "vulnerabilities_found=false" >> $GITHUB_OUTPUT
@@ -360,6 +367,19 @@ jobs:
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('audit-report.txt', 'utf8');
+            
+            // Avoid creating duplicate open issues for the same audit finding.
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'security,auto-fixed,dependencies',
+              per_page: 1
+            });
+            if (existing.data.length > 0) {
+              console.log('An open security-audit issue already exists — skipping creation.');
+              return;
+            }
             
             const title = '🔒 Security Audit: Vulnerabilities Auto-Fixed';
             const body = `## Security Audit Completed
