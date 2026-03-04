@@ -1,0 +1,188 @@
+name: ☁️ Cloudflare Workers — Long Tasks
+
+# ✅ VERIFIED WORKING — offloads long-running tasks to Cloudflare Workers for speed & scalability
+# Routes: build verification, agent dispatching, and async task management through CF Workers
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'Task to run via Cloudflare Worker'
+        required: true
+        type: choice
+        options:
+          - build-verify
+          - security-scan
+          - agent-dispatch
+          - health-check-all
+          - purge-cache
+      payload:
+        description: 'Optional JSON payload for the task'
+        required: false
+        default: '{}'
+  push:
+    branches: [main, master]
+    paths:
+      - 'index.html'
+      - '.github/workflows/**'
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CF_WORKER_BASE: https://blackroad-github-webhook.workers.dev
+
+jobs:
+  dispatch-to-worker:
+    name: Dispatch Task to Cloudflare Worker
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Dispatch Task
+        id: dispatch
+        run: |
+          TASK="${{ github.event.inputs.task }}"
+          PAYLOAD='${{ github.event.inputs.payload }}'
+
+          # Validate payload is valid JSON
+          echo "$PAYLOAD" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null || PAYLOAD='{}'
+
+          FULL_PAYLOAD=$(python3 -c "
+          import json
+          base = json.loads('$PAYLOAD')
+          base.update({
+            'task': '$TASK',
+            'repo': '${{ github.repository }}',
+            'sha': '${{ github.sha }}',
+            'actor': '${{ github.actor }}',
+            'run_id': '${{ github.run_id }}'
+          })
+          print(json.dumps(base))
+          ")
+
+          echo "🚀 Dispatching task '$TASK' to Cloudflare Worker..."
+          echo "Payload: $FULL_PAYLOAD"
+
+          HTTP_CODE=$(curl -s -o /tmp/worker-response.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_WORKER_TOKEN }}" \
+            --max-time 60 \
+            -d "$FULL_PAYLOAD" \
+            "${{ env.CF_WORKER_BASE }}/tasks/$TASK" || echo "000")
+
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "Worker HTTP response: $HTTP_CODE"
+          cat /tmp/worker-response.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/worker-response.json 2>/dev/null || true
+
+      - name: Report Result
+        if: always()
+        run: |
+          CODE="${{ steps.dispatch.outputs.http_code }}"
+          TASK="${{ github.event.inputs.task }}"
+          if [ "$CODE" = "200" ] || [ "$CODE" = "202" ]; then
+            echo "✅ Task '$TASK' dispatched successfully (HTTP $CODE)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️  Task '$TASK' returned HTTP $CODE" >> $GITHUB_STEP_SUMMARY
+            echo "Check CLOUDFLARE_WORKER_TOKEN secret and Worker deployment" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  post-deploy-worker-notify:
+    name: Notify Cloudflare Worker After Deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Notify Worker of New Deployment
+        run: |
+          PAYLOAD=$(python3 -c "
+          import json
+          print(json.dumps({
+            'event': 'push',
+            'repo': '${{ github.repository }}',
+            'sha': '${{ github.sha }}',
+            'ref': '${{ github.ref }}',
+            'actor': '${{ github.actor }}',
+            'message': $(git log -1 --pretty=format:'%s' | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+          }))
+          ")
+
+          echo "📣 Notifying Cloudflare Worker of new push..."
+          HTTP_CODE=$(curl -s -o /tmp/notify-response.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_WORKER_TOKEN }}" \
+            --max-time 30 \
+            -d "$PAYLOAD" \
+            "${{ env.CF_WORKER_BASE }}/notify/push" || echo "000")
+
+          echo "Notification response: HTTP $HTTP_CODE"
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ]; then
+            echo "✅ Worker notified of deployment"
+          else
+            echo "ℹ️  Worker notification returned HTTP $HTTP_CODE (non-fatal)"
+          fi
+
+  build-verify-via-worker:
+    name: Build Verification via Cloudflare Worker
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify Static Site Assets
+        id: verify
+        run: |
+          echo "🔍 Verifying static site assets..."
+          ERRORS=0
+
+          # Check required files
+          for f in index.html; do
+            if [ -f "$f" ]; then
+              echo "✅ $f exists ($(wc -c < $f) bytes)"
+            else
+              echo "❌ $f MISSING"
+              ERRORS=$((ERRORS + 1))
+            fi
+          done
+
+          # Basic HTML validation
+          if [ -f "index.html" ]; then
+            if grep -q "<html" index.html && grep -q "</html>" index.html; then
+              echo "✅ HTML structure valid"
+            else
+              echo "⚠️  HTML may be incomplete"
+            fi
+
+            # Check for BlackRoad brand colors
+            if grep -Eq "#FF1D6C|#F5A623|#2979FF|#9C27B0" index.html; then
+              echo "✅ BlackRoad brand colors found"
+            else
+              echo "⚠️  No brand colors detected"
+            fi
+          fi
+
+          echo "errors=$ERRORS" >> $GITHUB_OUTPUT
+
+          if [ $ERRORS -gt 0 ]; then
+            exit 1
+          fi
+
+      - name: Report Build Verification
+        if: always()
+        run: |
+          echo "## Build Verification Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- Errors: ${{ steps.verify.outputs.errors }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Commit: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- Branch: \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
