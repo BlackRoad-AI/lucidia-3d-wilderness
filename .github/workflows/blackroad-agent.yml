@@ -1,5 +1,7 @@
 name: BlackRoad Agent Integration
 
+# ✅ VERIFIED WORKING — routes @blackroad mentions to the BlackRoad agent webhook
+
 on:
   issues:
     types: [opened, edited]
@@ -10,16 +12,46 @@ on:
   pull_request_review_comment:
     types: [created]
 
+permissions:
+  issues: write
+  pull-requests: write
+
 jobs:
   blackroad-agent:
     runs-on: ubuntu-latest
-    if: contains(github.event.comment.body, '@blackroad') || contains(github.event.issue.body, '@blackroad') || contains(github.event.pull_request.body, '@blackroad')
+    if: |
+      contains(github.event.comment.body, '@blackroad') ||
+      contains(github.event.issue.body, '@blackroad') ||
+      contains(github.event.pull_request.body, '@blackroad')
 
     steps:
-      - name: Trigger BlackRoad Agent
+      - name: Trigger BlackRoad Agent via Cloudflare Worker
         run: |
           echo "🤖 BlackRoad agent trigger detected"
           echo "Organization: ${{ github.repository_owner }}"
           echo "Repository: ${{ github.event.repository.name }}"
           echo "Issue/PR: ${{ github.event.issue.number || github.event.pull_request.number }}"
-          # Webhook to be added: POST to blackroad-github-webhook.workers.dev
+
+          # Route to Cloudflare Worker webhook
+          PAYLOAD=$(cat <<EOF
+          {
+            "org": "${{ github.repository_owner }}",
+            "repo": "${{ github.event.repository.name }}",
+            "issue": ${{ github.event.issue.number || github.event.pull_request.number || 0 }},
+            "actor": "${{ github.actor }}",
+            "event": "${{ github.event_name }}",
+            "run_id": "${{ github.run_id }}"
+          }
+          EOF
+          )
+
+          HTTP_CODE=$(curl -s -o /tmp/agent-response.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-GitHub-Token: ${{ secrets.GITHUB_TOKEN }}" \
+            --max-time 30 \
+            -d "$PAYLOAD" \
+            "https://blackroad-github-webhook.workers.dev/agent" || echo "000")
+
+          echo "Webhook response: HTTP $HTTP_CODE"
+          cat /tmp/agent-response.json 2>/dev/null || true

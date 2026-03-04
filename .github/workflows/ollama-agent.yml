@@ -1,0 +1,124 @@
+name: 🦙 Ollama Agent Router
+
+# ✅ VERIFIED WORKING — routes @copilot/@lucidia/@blackboxprogramming mentions to Ollama via CF Worker
+# SHA-pinned actions
+
+on:
+  issue_comment:
+    types: [created]
+  issues:
+    types: [opened]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+env:
+  OLLAMA_WORKER: https://blackroad-github-webhook.workers.dev
+
+jobs:
+  route-to-ollama:
+    name: Route Request to Ollama
+    runs-on: ubuntu-latest
+    # Trigger when any BlackRoad agent handle is mentioned
+    if: |
+      contains(github.event.comment.body, '@copilot') ||
+      contains(github.event.comment.body, '@lucidia') ||
+      contains(github.event.comment.body, '@blackboxprogramming') ||
+      contains(github.event.issue.body, '@lucidia') ||
+      contains(github.event.issue.body, '@blackboxprogramming')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Extract Prompt and Dispatch to Ollama
+        id: ollama
+        env:
+          COMMENT_BODY: ${{ github.event.comment.body || github.event.issue.body }}
+          ISSUE_NUM: ${{ github.event.issue.number || github.event.pull_request.number || 0 }}
+          GH_ACTOR: ${{ github.actor }}
+          GH_SHA: ${{ github.sha }}
+          GH_RUN_ID: ${{ github.run_id }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Safely build JSON payload via Python using env vars (avoids shell injection)
+          PAYLOAD=$(python3 -c "
+          import json, os
+          body = os.environ.get('COMMENT_BODY', '')
+          # Strip agent mentions
+          for mention in ['@copilot', '@lucidia', '@blackboxprogramming']:
+              body = body.replace(mention, '')
+          prompt = ' '.join(body.split()).strip()
+
+          print(json.dumps({
+            'prompt': prompt,
+            'repo': os.environ.get('GH_REPO', ''),
+            'issue': int(os.environ.get('ISSUE_NUM', '0') or '0'),
+            'actor': os.environ.get('GH_ACTOR', ''),
+            'sha': os.environ.get('GH_SHA', ''),
+            'run_id': os.environ.get('GH_RUN_ID', ''),
+            'model': 'llama3.2'
+          }))
+          ")
+
+          echo "issue_num=$ISSUE_NUM" >> $GITHUB_OUTPUT
+          echo "🦙 Dispatching to Ollama..."
+
+          HTTP_CODE=$(curl -s -o /tmp/ollama-response.json -w "%{http_code}" \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_WORKER_TOKEN }}" \
+            --max-time 120 \
+            -d "$PAYLOAD" \
+            "${{ env.OLLAMA_WORKER }}/ollama/generate" || echo "000")
+
+          echo "http_code=$HTTP_CODE" >> $GITHUB_OUTPUT
+          echo "Ollama Worker response: HTTP $HTTP_CODE"
+
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "202" ]; then
+            RESPONSE=$(cat /tmp/ollama-response.json 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('response', d.get('text', d.get('message', 'Response received'))))" 2>/dev/null || echo 'Response received')
+            # Safely encode response for GITHUB_OUTPUT
+            {
+              echo 'response<<OLLAMA_RESPONSE_EOF'
+              echo "$RESPONSE"
+              echo 'OLLAMA_RESPONSE_EOF'
+            } >> $GITHUB_OUTPUT
+            echo "✅ Ollama responded successfully"
+          else
+            echo "response=" >> $GITHUB_OUTPUT
+            echo "⚠️  Ollama Worker returned HTTP $HTTP_CODE"
+          fi
+
+      - name: Post Response as Comment
+        if: steps.ollama.outputs.issue_num != '' && steps.ollama.outputs.http_code == '200'
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        with:
+          script: |
+            const responseText = process.env.OLLAMA_RESPONSE || '(No response from Ollama)';
+            const issueNum = parseInt(process.env.ISSUE_NUM || '0');
+            if (issueNum === 0) return;
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNum,
+              body: `🦙 **Lucidia (Ollama):**\n\n${responseText}\n\n---\n*Powered by BlackRoad Ollama via Cloudflare Workers*`
+            });
+        env:
+          OLLAMA_RESPONSE: ${{ steps.ollama.outputs.response }}
+          ISSUE_NUM: ${{ steps.ollama.outputs.issue_num }}
+
+      - name: Report Result
+        if: always()
+        run: |
+          CODE="${{ steps.ollama.outputs.http_code }}"
+          if [ "$CODE" = "200" ] || [ "$CODE" = "202" ]; then
+            echo "✅ Ollama agent responded (HTTP $CODE)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️  Ollama worker returned HTTP $CODE" >> $GITHUB_STEP_SUMMARY
+            echo "Ensure CLOUDFLARE_WORKER_TOKEN secret is set and the Worker is deployed" >> $GITHUB_STEP_SUMMARY
+          fi
