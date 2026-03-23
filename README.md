@@ -1,5 +1,13 @@
 # lucidia-3d-wilderness
 
+> 3D Minnesota wilderness environment where all BlackRoad AI models live - Immersive first-person experience
+
+Part of the [BlackRoad OS](https://blackroad.io) ecosystem — [BlackRoad-AI](https://github.com/BlackRoad-AI)
+
+---
+
+# lucidia-3d-wilderness
+
 3D Minnesota wilderness environment where all BlackRoad AI models live - Immersive first-person experience
 
 **BlackRoad-AI** — AI — models, inference, agents
